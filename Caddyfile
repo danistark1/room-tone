@@ -1,3 +1,8 @@
+{
+	auto_https disable_redirects
+	default_sni {$LAN_HOST}
+}
+
 https://{$LAN_HOST} {
 	tls internal
 	encode zstd gzip
