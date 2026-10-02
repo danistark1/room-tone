@@ -1,0 +1,39 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATA_DIR: /data
+      ADMIN_PIN: ${ADMIN_PIN:?Set ADMIN_PIN in .env}
+      COOKIE_SECURE: "true"
+    volumes:
+      - roomtone_data:/data
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      LAN_HOST: ${LAN_HOST:?Set LAN_HOST to your server LAN IP in .env}
+    ports:
+      - "${LAN_HOST}:80:80"
+      - "${LAN_HOST}:443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+
+networks:
+  internal:
+
+volumes:
+  roomtone_data:
+  caddy_data:
+  caddy_config:

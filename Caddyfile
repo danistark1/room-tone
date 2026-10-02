@@ -1,0 +1,10 @@
+https://{$LAN_HOST} {
+	tls internal
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(self), microphone=(self)"
+	}
+	reverse_proxy app:3000
+}
