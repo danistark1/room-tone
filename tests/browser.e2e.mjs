@@ -63,6 +63,12 @@ try {
   receiver.on('pageerror', error => errors.push('receiver: ' + error.message));
   await enroll(caller, 'Living room', 'Hall tablet');
   await enroll(receiver, 'Kitchen', 'Kitchen screen');
+  const manifest = await (await receiver.request.get(origin + '/manifest.webmanifest')).json();
+  assert.equal(manifest.display, 'standalone');
+  await receiver.evaluate(async () => {
+    const ready = await navigator.serviceWorker.ready;
+    if (!ready.active?.scriptURL.endsWith('/sw.js')) throw new Error('Roomtone service worker was not installed.');
+  });
   await makeCall(caller, receiver, 'audio');
   await makeCall(caller, receiver, 'video');
   await receiver.evaluate(() => {
@@ -85,6 +91,51 @@ try {
   await caller.getByRole('button', { name: 'Assign this device' }).click();
   await caller.locator('.device-chip', { hasText: 'Home office' }).waitFor();
   console.log('Administrator room management and reassignment passed.');
+  const phoneContext = await browser.newContext({ permissions: ['notifications'],
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1' });
+  await phoneContext.addInitScript(() => {
+    Object.defineProperty(navigator, 'standalone', { value: true });
+    const fake = {
+      endpoint: 'https://web.push.apple.com/roomtone-ui-test',
+      keys: { p256dh: 'B'.repeat(87), auth: 'C'.repeat(22) },
+      toJSON() { return { endpoint: this.endpoint, keys: this.keys }; },
+      unsubscribe: async () => { throw new Error('Simulated browser unsubscribe failure'); },
+    };
+    Object.defineProperty(navigator.serviceWorker, 'register', { configurable: true, value: async () => ({ pushManager: {
+      getSubscription: async () => localStorage.getItem('mock-subscribed') === '1' ? fake : null,
+      subscribe: () => { localStorage.setItem('mock-subscribed', '1'); return Promise.resolve(fake); },
+    } }) });
+  });
+  const phone = await phoneContext.newPage();
+  phone.on('pageerror', error => errors.push('phone: ' + error.message));
+  await enroll(phone, 'Entryway', 'Mock iPhone');
+  await phone.getByRole('button', { name: 'Enable alerts' }).click();
+  await phone.locator('.push-panel-copy strong', { hasText: 'alerts are on' }).waitFor();
+  await phone.getByRole('button', { name: 'Turn off alerts' }).click();
+  await phone.locator('.push-panel-copy strong', { hasText: 'alerts are off' }).waitFor();
+  await phone.reload();
+  await phone.locator('.push-panel-copy strong', { hasText: 'alerts are off' }).waitFor();
+  const inventory = await phone.evaluate(async () => (await fetch('/api/devices')).json());
+  assert.equal(inventory.find(device => device.name === 'Mock iPhone').alerts, false,
+    'a failed browser unsubscribe must not re-enable alerts on reload');
+  await phone.getByRole('button', { name: 'Enable alerts' }).click();
+  await phone.locator('.push-panel-copy strong', { hasText: 'alerts are on' }).waitFor();
+  let failDeleteOnce = true;
+  await phone.route('**/api/push/subscription', route => {
+    if (route.request().method() === 'DELETE' && failDeleteOnce) {
+      failDeleteOnce = false;
+      return route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"Simulated outage"}' });
+    }
+    return route.continue();
+  });
+  await phone.getByRole('button', { name: 'Turn off alerts' }).click();
+  await phone.locator('.push-panel-copy strong', { hasText: 'Still turning alerts off' }).waitFor();
+  assert.equal((await phone.evaluate(async () => (await fetch('/api/devices')).json())).find(device => device.name === 'Mock iPhone').alerts, true);
+  await phone.reload();
+  await phone.locator('.push-panel-copy strong', { hasText: 'alerts are off' }).waitFor();
+  assert.equal((await phone.evaluate(async () => (await fetch('/api/devices')).json())).find(device => device.name === 'Mock iPhone').alerts, false);
+  console.log('Alert opt-out survives failed browser cleanup and a server outage; re-enable remains deliberate.');
+  await phoneContext.close();
   assert.deepEqual(errors, [], 'No unhandled browser exceptions');
   console.log('Two-browser voice and video WebRTC flows passed.');
 } finally {

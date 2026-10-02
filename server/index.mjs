@@ -4,6 +4,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { createPushService, validSubscription } from './push.mjs';
 
 const port = Number(process.env.PORT || 3000);
 const dataPath = join(process.env.DATA_DIR || resolve('.data'), 'state.json');
@@ -23,6 +24,7 @@ const seed = () => ({
   devices: [],
 });
 mkdirSync(dirname(dataPath), { recursive: true });
+const push = createPushService(dirname(dataPath), process.env.VAPID_SUBJECT || 'https://github.com/danistark1/room-tone');
 let store = existsSync(dataPath) ? JSON.parse(readFileSync(dataPath, 'utf8')) : seed();
 if (!existsSync(dataPath)) persist();
 function persist() {
@@ -50,6 +52,7 @@ function presence() {
   return store.rooms.map(room => ({
     roomId: room.id,
     online: [...online.keys()].filter(id => deviceById(id)?.roomId === room.id).length,
+    alerts: store.devices.filter(device => device.roomId === room.id && !online.has(device.id) && validSubscription(device.push)).length,
     busy: busyRooms.has(room.id),
   }));
 }
@@ -59,6 +62,10 @@ function send(socket, message) {
 function sendTo(id, message) { send(online.get(id), message); }
 function broadcast(message) { for (const socket of online.values()) send(socket, message); }
 function broadcastState() { broadcast({ type: 'state', rooms: store.rooms, presence: presence() }); }
+function ringMessage(call) {
+  return { type: 'call:ring', callId: call.id, fromRoom: roomById(call.fromRoomId),
+    fromDevice: deviceById(call.callerId)?.name || 'A device', mode: call.mode };
+}
 function endCall(call, reason = 'ended') {
   if (!calls.has(call.id)) return;
   clearTimeout(call.timer);
@@ -72,10 +79,33 @@ function removeRingingDevice(call, id) {
   call.ringingIds.delete(id);
   if (call.status === 'ringing' && call.ringingIds.size === 0) endCall(call, 'unavailable');
 }
-function endCallsForDevice(deviceId, reason = 'disconnected') {
+async function notifyCall(call, ttl) {
+  const targets = [...call.ringingIds].map(id => ({ id, subscription: validSubscription(deviceById(id)?.push) }))
+    .filter(target => target.subscription);
+  let changed = false;
+  const delivered = await Promise.all(targets.map(async ({ id, subscription }) => {
+    try {
+      await push.send(subscription, { type: 'call', callId: call.id, expiresAt: Date.now() + ttl * 1000 }, ttl);
+      return true;
+    } catch (error) {
+      console.warn(`Push delivery failed for a device (${error?.statusCode || error?.code || 'network'}).`);
+      const device = deviceById(id);
+      if ([404, 410].includes(error?.statusCode) && device?.push?.endpoint === subscription.endpoint) {
+        delete device.push;
+        changed = true;
+        if (!online.has(id) && calls.has(call.id)) removeRingingDevice(call, id);
+      }
+      return false;
+    }
+  }));
+  if (changed) { persist(); broadcastState(); }
+  if (calls.has(call.id) && call.status === 'ringing' && !delivered.includes(true) &&
+      ![...call.ringingIds].some(id => online.has(id))) endCall(call, 'push_unavailable');
+}
+function endCallsForDevice(deviceId, reason = 'disconnected', forceRemove = false) {
   for (const call of [...calls.values()]) {
     if (call.callerId === deviceId || call.calleeId === deviceId) endCall(call, reason);
-    else if (call.ringingIds.has(deviceId)) removeRingingDevice(call, deviceId);
+    else if (call.ringingIds.has(deviceId) && (forceRemove || !validSubscription(deviceById(deviceId)?.push))) removeRingingDevice(call, deviceId);
   }
 }
 function cookieToken(req) {
@@ -101,6 +131,7 @@ app.use((req, res, next) => {
 });
 app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
 app.get('/api/bootstrap', (req, res) => res.json({ rooms: store.rooms, presence: presence(), admin: isAdmin(req) }));
+app.get('/api/push/config', (_req, res) => res.json({ publicKey: push.publicKey }));
 app.post('/api/admin/login', (req, res) => {
   const key = req.ip || 'unknown';
   const prior = attempts.get(key) || { count: 0, until: 0 };
@@ -157,11 +188,11 @@ app.delete('/api/rooms/:id', requireAdmin, (req, res) => {
   persist(); broadcastState(); res.status(204).end();
 });
 app.get('/api/devices', requireAdmin, (_req, res) => {
-  res.json(store.devices.map(device => ({ ...publicDevice(device), online: online.has(device.id), updatedAt: device.updatedAt || null })));
+  res.json(store.devices.map(device => ({ ...publicDevice(device), online: online.has(device.id), alerts: !!validSubscription(device.push), updatedAt: device.updatedAt || null })));
 });
 app.delete('/api/devices/:id', requireAdmin, (req, res) => {
   if (!deviceById(req.params.id)) return res.status(404).json({ error: 'Device not found.' });
-  endCallsForDevice(req.params.id, 'revoked');
+  endCallsForDevice(req.params.id, 'revoked', true);
   const socket = online.get(req.params.id);
   online.delete(req.params.id);
   socket?.close(1008, 'Device removed');
@@ -181,7 +212,7 @@ app.post('/api/device', (req, res) => {
       return res.status(401).json({ error: 'Device authorization expired. Set up this browser again.' });
     }
     if (device.roomId !== roomId && !isAdmin(req)) return res.status(401).json({ error: 'Enter the administrator PIN to change rooms.' });
-    if (device.roomId !== roomId) endCallsForDevice(device.id, 'room_changed');
+    if (device.roomId !== roomId) endCallsForDevice(device.id, 'room_changed', true);
     device.name = name;
     device.roomId = roomId;
     device.updatedAt = new Date().toISOString();
@@ -196,6 +227,29 @@ app.post('/api/device', (req, res) => {
   sendTo(device.id, { type: 'device:updated', device: publicDevice(device) });
   broadcastState();
   res.json({ device: publicDevice(device), token });
+});
+
+function authorizedDevice(req) {
+  const device = deviceById(req.body?.id);
+  return device && typeof req.body?.token === 'string' && hash(req.body.token) === device.tokenHash ? device : null;
+}
+app.post('/api/push/subscription', (req, res) => {
+  const device = authorizedDevice(req);
+  if (!device) return res.status(401).json({ error: 'Assign this device before enabling alerts.' });
+  if (!device.roomId) return res.status(400).json({ error: 'Assign this device to a room first.' });
+  const subscription = validSubscription(req.body?.subscription);
+  if (!subscription) return res.status(400).json({ error: 'Unsupported or invalid push subscription.' });
+  device.push = subscription;
+  persist(); broadcastState();
+  res.json({ enabled: true });
+});
+app.delete('/api/push/subscription', (req, res) => {
+  const device = authorizedDevice(req);
+  if (!device) return res.status(401).json({ error: 'This device is no longer authorized.' });
+  delete device.push;
+  if (!online.has(device.id)) endCallsForDevice(device.id, 'disconnected', true);
+  persist(); broadcastState();
+  res.status(204).end();
 });
 
 const server = createServer(app);
@@ -244,6 +298,9 @@ wss.on('connection', socket => {
       }
       online.set(deviceId, socket);
       send(socket, { type: 'ready', device: publicDevice(device), rooms: store.rooms, presence: presence() });
+      for (const call of calls.values()) {
+        if (call.status === 'ringing' && call.ringingIds.has(deviceId)) send(socket, ringMessage(call));
+      }
       broadcastState(); return;
     }
     const device = deviceById(deviceId);
@@ -257,16 +314,20 @@ wss.on('connection', socket => {
       if ([...calls.values()].some(call => [call.fromRoomId, call.targetRoomId].includes(device.roomId) || [call.fromRoomId, call.targetRoomId].includes(target.id))) {
         send(socket, { type: 'error', message: 'One of these rooms is already on a call.' }); return;
       }
-      const ringingIds = new Set([...online.keys()].filter(id => deviceById(id)?.roomId === target.id));
+      const ringingIds = new Set(store.devices.filter(candidate => candidate.roomId === target.id &&
+        (online.has(candidate.id) || validSubscription(candidate.push))).map(candidate => candidate.id));
       if (!ringingIds.size) { send(socket, { type: 'error', message: `${target.name} is offline right now.` }); return; }
+      const hasPush = [...ringingIds].some(id => validSubscription(deviceById(id)?.push));
+      const ringSeconds = hasPush ? 75 : 45;
       const call = {
         id: randomUUID(), callerId: deviceId, calleeId: null, fromRoomId: device.roomId,
         targetRoomId: target.id, ringingIds, mode, status: 'ringing', timer: null,
       };
       calls.set(call.id, call);
-      call.timer = setTimeout(() => endCall(call, 'no_answer'), 45000);
+      call.timer = setTimeout(() => endCall(call, 'no_answer'), ringSeconds * 1000);
       send(socket, { type: 'call:outgoing', callId: call.id, targetRoom: target, mode });
-      for (const id of ringingIds) sendTo(id, { type: 'call:ring', callId: call.id, fromRoom: roomById(device.roomId), fromDevice: device.name, mode });
+      for (const id of ringingIds) sendTo(id, ringMessage(call));
+      if (hasPush) void notifyCall(call, ringSeconds);
       broadcastState(); return;
     }
     const call = calls.get(message.callId);

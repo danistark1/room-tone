@@ -196,6 +196,7 @@ export function useIntercom() {
     if ((message.type === 'call:ended' || message.type === 'call:answered_elsewhere') && callRef.current?.id === message.callId) {
       const reason: Record<string, string> = {
         no_answer: 'No one answered that room.', unavailable: 'No devices are available in that room.',
+        push_unavailable: 'The room’s lock-screen notification could not be delivered. Check internet access and alert settings.',
         disconnected: 'The other device disconnected.', room_removed: 'This room was removed.', room_changed: 'The device changed rooms.',
         connection_timeout: 'The devices could not establish a direct connection.', replaced: 'This device was opened in another tab.',
       };
@@ -242,8 +243,35 @@ export function useIntercom() {
       .finally(() => setLoaded(true));
     const saved = profileRef.current;
     if (saved) connect(saved);
+    const timeouts: ReturnType<typeof setTimeout>[] = [];
+    const resume = () => {
+      if (document.visibilityState === 'visible' && profileRef.current && socketRef.current?.readyState !== WebSocket.OPEN) {
+        if (reconnectRef.current) clearTimeout(reconnectRef.current);
+        connect(profileRef.current);
+      }
+    };
+    const checkCall = (id: string) => {
+      if (!id) return;
+      resume();
+      timeouts.push(setTimeout(() => {
+        if (!callRef.current || callRef.current.id !== id) setError('That call has already ended. Ask the other room to try again.');
+      }, 3500));
+    };
+    const fromNotification = (event: MessageEvent) => {
+      if (event.data?.type === 'roomtone:open-call') checkCall(event.data.callId);
+    };
+    const incomingId = new URLSearchParams(location.search).get('call');
+    if (incomingId) {
+      history.replaceState(null, '', location.pathname);
+      checkCall(incomingId);
+    }
+    document.addEventListener('visibilitychange', resume);
+    navigator.serviceWorker?.addEventListener('message', fromNotification);
     return () => {
       intentionalCloseRef.current = true;
+      document.removeEventListener('visibilitychange', resume);
+      navigator.serviceWorker?.removeEventListener('message', fromNotification);
+      for (const timeout of timeouts) clearTimeout(timeout);
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
       socketRef.current?.close();
       localRef.current?.getTracks().forEach(track => track.stop());

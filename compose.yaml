@@ -8,6 +8,7 @@ services:
       DATA_DIR: /data
       ADMIN_PIN: ${ADMIN_PIN:?Set ADMIN_PIN in .env}
       COOKIE_SECURE: "true"
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-https://github.com/danistark1/room-tone}
     volumes:
       - roomtone_data:/data
     networks:

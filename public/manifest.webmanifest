@@ -1,0 +1,15 @@
+{
+  "id": "/",
+  "name": "Roomtone — Private Intercom",
+  "short_name": "Roomtone",
+  "description": "A private room-to-room voice and video intercom.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#101514",
+  "theme_color": "#101514",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

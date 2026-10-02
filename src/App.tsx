@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Activity, ArrowRight, ArrowUpRight, AudioLines, Check, ChevronRight,
+  Activity, ArrowRight, ArrowUpRight, AudioLines, Bell, BellOff, Check, ChevronRight,
   DoorOpen, Headphones, House, Laptop, LockKeyhole, Menu, Mic, MicOff, Pencil, Phone,
   PhoneOff, Plus, Settings2, Shield, Trash2, Utensils, Video, VideoOff, Wifi, WifiOff, X,
 } from 'lucide-react';
 import { useIntercom } from './useIntercom';
+import { usePush } from './usePush';
 import type { AdminDevice, Presence, Room } from './types';
 import './styles.css';
 
@@ -19,8 +20,8 @@ function RoomIcon({ room, index }: { room: Room; index: number }) {
   return <span className={`room-icon icon-tone-${index % 4}`}><Icon size={23} strokeWidth={1.6}/></span>;
 }
 function Status({ status, count }: { status: Presence | undefined; count?: boolean }) {
-  const text = status?.busy ? 'On a call' : status?.online ? count ? `${status.online} ${status.online === 1 ? 'device' : 'devices'} online` : 'Available' : 'Offline';
-  return <span className={`status ${status?.busy ? 'status-busy' : status?.online ? 'status-online' : 'status-offline'}`}>
+  const text = status?.busy ? 'On a call' : status?.online ? count ? `${status.online} ${status.online === 1 ? 'device' : 'devices'} online` : 'Available' : status?.alerts ? count ? `${status.alerts} reachable by alert` : 'Alert available' : 'Offline';
+  return <span className={`status ${status?.busy ? 'status-busy' : status?.online ? 'status-online' : status?.alerts ? 'status-alert' : 'status-offline'}`}>
     <span className="status-dot"/>{text}
   </span>;
 }
@@ -123,7 +124,7 @@ function DeviceSetup({ app, onAssign, onManage, onClose, inactive }: { app: Inte
         </select>
         {app.rooms.length === 0 && <p className="setup-hint">No rooms yet. <button type="button" className="inline-link" onClick={onManage}>Create the first room</button> with the administrator PIN.</p>}
         <button className="primary-button full-button" type="submit" disabled={!name.trim() || !roomId}>Assign this device <ArrowRight size={18}/></button>
-        <div className="setup-footer"><Shield size={15}/> Stays entirely on your local network.</div>
+        <div className="setup-footer"><Shield size={15}/> Voice and video stay on your local network.</div>
       </div>
     </form>
   </div>;
@@ -186,7 +187,7 @@ function ManagePanel({ app, onClose }: { app: Intercom; onClose: () => void }) {
       {localError && !creating && !editing && <div className="form-error">{localError}</div>}
       <div className="panel-section-heading device-heading"><span>REGISTERED DEVICES <b>{devices.length.toString().padStart(2, '0')}</b></span></div>
       <div className="manage-list device-list">{devices.map(device => <div className="manage-row" key={device.id}>
-        <span className="device-list-icon"><Headphones size={18}/></span><div className="manage-row-copy"><strong>{device.name}</strong><span>{app.rooms.find(room => room.id === device.roomId)?.name || 'Unassigned'} · {device.online ? 'Online' : 'Offline'}</span></div>
+        <span className="device-list-icon"><Headphones size={18}/></span><div className="manage-row-copy"><strong>{device.name}</strong><span>{app.rooms.find(room => room.id === device.roomId)?.name || 'Unassigned'} · {device.online ? 'Online' : device.alerts ? 'Lock-screen alerts on' : 'Offline'}</span></div>
         <button className="icon-button danger-hover" onClick={() => setRevokingDevice(device)} aria-label={`Remove ${device.name}`} title="Remove device"><Trash2 size={17}/></button>
       </div>)}{!devices.length && <div className="device-empty">No devices registered yet.</div>}</div>
       <div className="panel-footer"><Shield size={18}/><span>Only someone with the administrator PIN can make changes to rooms or device assignments.</span></div>
@@ -197,8 +198,33 @@ function ManagePanel({ app, onClose }: { app: Intercom; onClose: () => void }) {
   </div>;
 }
 
+function PushPanel({ push }: { push: ReturnType<typeof usePush> }) {
+  const { state, error } = push;
+  const title = state === 'enabled' ? 'Lock-screen alerts are on.' : state === 'install' ? 'Take Roomtone with you.' :
+    state === 'off' ? 'Lock-screen alerts are off.' : state === 'pending-off' ? 'Still turning alerts off.' :
+    state === 'denied' ? 'Notifications are blocked.' : state === 'unavailable' ? 'Alerts aren’t available here.' :
+    'Know when someone calls, even when the screen is locked.';
+  const description = state === 'install' ? 'In Safari, tap Share → Add to Home Screen. Open that icon, assign it to a room, then enable alerts there.' :
+    state === 'enabled' ? 'An incoming call sends a notification. Tap it, unlock, and answer in Roomtone. Voice and video stay local.' :
+    state === 'off' ? 'This device will not receive lock-screen calls. You can turn alerts back on whenever you like.' :
+    state === 'pending-off' ? 'Roomtone could not reach the server to confirm your choice. This device may still receive alerts until you retry.' :
+    state === 'denied' ? 'Allow Roomtone notifications in your device settings, then reopen this app.' :
+    state === 'unavailable' ? 'Use a browser that supports Web Push. On iPhone, use iOS 16.4+ and open the Home Screen app.' :
+    `Opt in once. ${push.isIOS ? 'Apple' : 'Your browser'} delivers the alert; your conversation stays on your local network.`;
+  return <section className={`push-panel ${state === 'enabled' ? 'push-panel-on' : ''}`} aria-label="Lock-screen notifications">
+    <div className="push-panel-icon">{['denied', 'off', 'pending-off'].includes(state) ? <BellOff size={21}/> : <Bell size={21}/>}</div>
+    <div className="push-panel-copy"><div className="eyebrow">ROOMTONE / LOCK-SCREEN ALERTS</div><strong>{title}</strong><p>{description}</p>{error && <span role="alert" className="push-panel-error">{error}</span>}</div>
+    <div className="push-panel-action">{state === 'enabled' ? <button className="subtle-button" onClick={() => void push.disable()}>Turn off alerts</button> :
+      state === 'ready' || state === 'off' ? <button className="primary-button" onClick={() => void push.enable()}><Bell size={16}/> Enable alerts</button> :
+      state === 'pending-off' ? <button className="subtle-button" onClick={() => void push.disable()}>Retry turning off</button> :
+      state === 'error' || state === 'denied' ? <button className="subtle-button" onClick={() => location.reload()}>Recheck settings</button> :
+      state === 'working' || state === 'loading' ? <span>Checking device…</span> : state === 'install' ? <span>ADD TO HOME SCREEN FIRST <ArrowRight size={16}/></span> : null}</div>
+  </section>;
+}
+
 export default function App() {
   const app = useIntercom();
+  const push = usePush(app.profile);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
@@ -210,10 +236,10 @@ export default function App() {
   const myRoom = app.rooms.find(room => room.id === app.profile?.device.roomId);
   const selectedRoom = app.rooms.find(room => room.id === selectedId) || app.rooms.find(room => room.id !== myRoom?.id) || app.rooms[0];
   const selectedStatus = app.presence.find(item => item.roomId === selectedRoom?.id);
-  const onlineRooms = app.presence.filter(item => item.online > 0).length;
+  const reachableRooms = app.presence.filter(item => item.online > 0 || item.alerts > 0).length;
   const others = useMemo(() => app.rooms.filter(room => room.id !== myRoom?.id), [app.rooms, myRoom?.id]);
   const shouldSetup = app.loaded && (!app.profile?.device.roomId || !myRoom || setupOpen);
-  const canCall = !!app.profile?.device.roomId && app.online && !!selectedStatus?.online && !selectedStatus.busy && selectedRoom?.id !== myRoom?.id && !app.call;
+  const canCall = !!app.profile?.device.roomId && app.online && !!(selectedStatus?.online || selectedStatus?.alerts) && !selectedStatus?.busy && selectedRoom?.id !== myRoom?.id && !app.call;
   const openManage = () => { setMobileNav(false); if (app.admin) setManageOpen(true); else { setPinError(''); setPinAction('manage'); } };
   const assign = async (name: string, roomId: string) => {
     if (!app.admin) { setPendingAssignment({ name, roomId }); setPinError(''); setPinAction('assign'); return; }
@@ -253,7 +279,8 @@ export default function App() {
       </header>
       <div className="content">
         <div className="hero"><div className="hero-copy"><div className="eyebrow"><span className="eyebrow-rule"/> YOUR PRIVATE INTERCOM</div><h1>Every room,<br/><em>one tap away.</em></h1><p>A little closer, wherever you are. Choose a room to start a conversation.</p></div><div className="hero-art" aria-hidden="true"><div className="hero-art-glow"/><div className="hero-art-ring ring-one"/><div className="hero-art-ring ring-two"/><div className="hero-art-ring ring-three"/><div className="hero-art-core"><Mark/></div><span className="art-coordinate">RT — 001<br/>LOCAL SIGNAL</span></div></div>
-        <div className="overview-row"><div className="overview-left"><div className="overview-icon"><Activity size={19}/></div><div><strong>All systems in reach</strong><span>{app.rooms.length} {app.rooms.length === 1 ? 'room' : 'rooms'} in your space · {onlineRooms} online now</span></div></div>{app.profile && !app.alertsEnabled ? <button className="alerts-button" onClick={() => void app.enableAlerts()}><AudioLines size={16}/> Enable ring sound</button> : <span className="overview-meta"><Wifi size={15}/> LOCAL NETWORK</span>}</div>
+        <div className="overview-row"><div className="overview-left"><div className="overview-icon"><Activity size={19}/></div><div><strong>All systems in reach</strong><span>{app.rooms.length} {app.rooms.length === 1 ? 'room' : 'rooms'} in your space · {reachableRooms} reachable now</span></div></div>{app.profile && !app.alertsEnabled ? <button className="alerts-button" onClick={() => void app.enableAlerts()}><AudioLines size={16}/> Enable ring sound</button> : <span className="overview-meta"><Wifi size={15}/> LOCAL MEDIA</span>}</div>
+        {app.profile?.device.roomId && (push.isIOS || push.state !== 'unavailable') && <PushPanel push={push}/>}
         <div className="section-heading"><div><div className="eyebrow">THE DIRECTORY / 01</div><h2>Your rooms<span className="heading-count">{app.rooms.length.toString().padStart(2, '0')}</span></h2></div><button className="subtle-button" onClick={openManage}><Plus size={17}/> Manage rooms</button></div>
         {app.rooms.length === 0 ? <div className="empty-state"><div className="empty-icon"><House size={30}/></div><h3>A space to start with.</h3><p>Add your first room to give your devices a place to connect.</p><button className="primary-button" onClick={openManage}>Create a room <ArrowRight size={18}/></button></div> :
         <div className="directory-layout">
@@ -269,7 +296,7 @@ export default function App() {
           })}</div>
           {selectedRoom && <div className="detail-panel"><div className="detail-top"><div className="eyebrow">ROOM DETAILS / {String(app.rooms.indexOf(selectedRoom) + 1).padStart(2, '0')}</div><Status status={selectedStatus}/></div>
             <div className="detail-illustration"><div className="detail-ring detail-ring-outer"/><div className="detail-ring detail-ring-inner"/><div className="detail-center"><RoomIcon room={selectedRoom} index={app.rooms.indexOf(selectedRoom)}/></div><span className="detail-cross detail-cross-one">+</span><span className="detail-cross detail-cross-two">+</span></div>
-            <div className="detail-copy"><span>{selectedRoom.area.toUpperCase()}</span><h3>{selectedRoom.name}</h3><p>{selectedRoom.id === myRoom?.id ? 'This is where your device belongs. Choose another room to place a call.' : selectedStatus?.busy ? 'This room is on another call right now.' : !selectedStatus?.online ? 'No devices are connected in this room yet.' : 'Ready when you are. Pick how you’d like to connect.'}</p></div>
+            <div className="detail-copy"><span>{selectedRoom.area.toUpperCase()}</span><h3>{selectedRoom.name}</h3><p>{selectedRoom.id === myRoom?.id ? 'This is where your device belongs. Choose another room to place a call.' : selectedStatus?.busy ? 'This room is on another call right now.' : selectedStatus?.online ? 'Ready when you are. Pick how you’d like to connect.' : selectedStatus?.alerts ? 'We’ll notify this room’s devices. Open and answer the alert before the call ends.' : 'No devices are connected or reachable by alert yet.'}</p></div>
             <div className="detail-actions"><button className="primary-button" disabled={!canCall} onClick={() => app.startCall(selectedRoom, 'audio')}><Phone size={18} fill="currentColor"/> Voice call</button><button className="secondary-button" disabled={!canCall} onClick={() => app.startCall(selectedRoom, 'video')}><Video size={19}/> Video call</button></div>
             <div className="detail-foot"><Shield size={15}/> Encrypted, direct connection</div>
           </div>}
