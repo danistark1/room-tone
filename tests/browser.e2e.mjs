@@ -9,7 +9,8 @@ const port = 33000 + Math.floor(Math.random() * 18000);
 const origin = `http://127.0.0.1:${port}`;
 const dir = mkdtempSync(join(tmpdir(), 'roomtone-browser-'));
 const server = spawn(process.execPath, ['server/index.mjs'], {
-  cwd: process.cwd(), env: { ...process.env, PORT: String(port), DATA_DIR: dir, ADMIN_PIN: 'browser-test-pin', NODE_ENV: 'test' },
+  cwd: process.cwd(), env: { ...process.env, PORT: String(port), DATA_DIR: dir, ADMIN_PIN: 'browser-test-pin',
+    NODE_ENV: 'test', PUSH_TEST_LOG: join(dir, 'push-deliveries.jsonl') },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let browser;
@@ -101,7 +102,7 @@ try {
       toJSON() { return { endpoint: this.endpoint, keys: this.keys }; },
       unsubscribe: async () => { throw new Error('Simulated browser unsubscribe failure'); },
     };
-    Object.defineProperty(navigator.serviceWorker, 'register', { configurable: true, value: async () => ({ pushManager: {
+    Object.defineProperty(navigator.serviceWorker, 'register', { configurable: true, value: async () => ({ active: { state: 'activated' }, pushManager: {
       getSubscription: async () => localStorage.getItem('mock-subscribed') === '1' ? fake : null,
       subscribe: () => { localStorage.setItem('mock-subscribed', '1'); return Promise.resolve(fake); },
     } }) });
@@ -111,6 +112,10 @@ try {
   await enroll(phone, 'Entryway', 'Mock iPhone');
   await phone.getByRole('button', { name: 'Enable alerts' }).click();
   await phone.locator('.push-panel-copy strong', { hasText: 'alerts are on' }).waitFor();
+  await caller.locator('.sidebar-nav').getByRole('button', { name: 'Manage rooms' }).click();
+  await caller.getByRole('button', { name: 'Send test alert to Mock iPhone' }).click();
+  await caller.locator('.device-test-result', { hasText: 'Push service accepted' }).waitFor();
+  await caller.getByRole('button', { name: 'Close settings' }).click();
   await phone.getByRole('button', { name: 'Turn off alerts' }).click();
   await phone.locator('.push-panel-copy strong', { hasText: 'alerts are off' }).waitFor();
   await phone.reload();

@@ -5,10 +5,11 @@ self.addEventListener('push', event => {
   let message = {};
   try { message = event.data?.json() || {}; } catch { /* Always show a visible alert. */ }
   const callId = typeof message.callId === 'string' ? message.callId.slice(0, 80) : '';
+  const test = message.type === 'test';
   const expired = Number(message.expiresAt) > 0 && Date.now() > Number(message.expiresAt);
-  event.waitUntil(self.registration.showNotification(expired ? 'Missed Roomtone call' : 'Incoming Roomtone call', {
-    body: expired ? 'Open Roomtone to see your rooms.' : 'Tap to open Roomtone and answer before the call ends.',
-    icon: '/icon-192.png', badge: '/icon-192.png', tag: `roomtone-${callId || Date.now()}`,
+  event.waitUntil(self.registration.showNotification(test ? 'Roomtone test alert' : expired ? 'Missed Roomtone call' : 'Incoming Roomtone call', {
+    body: test ? 'Your intercom can receive notifications.' : expired ? 'Open Roomtone to see your rooms.' : 'Tap to open Roomtone and answer before the call ends.',
+    icon: '/icon-192.png', badge: '/icon-192.png', tag: test ? 'roomtone-test' : `roomtone-${callId || Date.now()}`,
     renotify: true, data: { callId },
   }));
 });

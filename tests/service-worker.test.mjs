@@ -44,4 +44,9 @@ test('the service worker shows a call alert and returns to the waiting app', asy
     waitUntil(promise) { this.result = promise; } };
   handlers.push(expired); await expired.result;
   assert.equal(notifications.at(-1).title, 'Missed Roomtone call');
+  const diagnostic = { data: { json: () => ({ type: 'test' }) },
+    waitUntil(promise) { this.result = promise; } };
+  handlers.push(diagnostic); await diagnostic.result;
+  assert.equal(notifications.at(-1).title, 'Roomtone test alert');
+  assert.equal(notifications.at(-1).options.tag, 'roomtone-test');
 });

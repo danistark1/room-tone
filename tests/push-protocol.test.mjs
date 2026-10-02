@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import webpush from 'web-push';
-import { createPushService, validSubscription } from '../server/push.mjs';
+import { createPushService, describePushError, validSubscription } from '../server/push.mjs';
 
 test('Apple-bound Web Push has an encrypted payload and a valid public contact claim', () => {
   const dir = mkdtempSync(join(tmpdir(), 'roomtone-vapid-'));
@@ -32,4 +32,11 @@ test('Apple-bound Web Push has an encrypted payload and a valid public contact c
     assert.equal(claim.sub, subject);
     assert.equal(claim.aud, 'https://web.push.apple.com');
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Apple rejection and network failure diagnostics contain only safe status and reason codes', () => {
+  assert.equal(describePushError({ statusCode: 403, body: '{"reason":"BadJwtToken"}' }), '403 BadJwtToken');
+  assert.equal(describePushError({ statusCode: 410, body: '{"reason":"ExpiredToken"}' }), '410 ExpiredToken');
+  assert.equal(describePushError({ code: 'ETIMEDOUT' }), 'ETIMEDOUT');
+  assert.equal(describePushError({ statusCode: 500, body: '{"reason":"Bad\nSecret"}' }), '500 network_error');
 });

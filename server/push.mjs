@@ -18,6 +18,16 @@ export function validSubscription(value) {
   return { endpoint: url.href, keys: { p256dh, auth } };
 }
 
+export function describePushError(error) {
+  let reason = '';
+  try { reason = JSON.parse(error?.body || '{}').reason || ''; } catch { /* Non-JSON transport error. */ }
+  if (!reason && typeof error?.code === 'string') reason = error.code;
+  const safeReason = String(reason).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+  const status = Number(error?.statusCode);
+  return [Number.isInteger(status) && status >= 100 && status <= 599 ? status : null, safeReason || 'network_error']
+    .filter(Boolean).join(' ');
+}
+
 export function createPushService(dataDir, subject) {
   if (!/^https:\/\/[^\s/]+(?:\/\S*)?$|^mailto:[^\s@]+@[^\s@.]+\.[^\s@]+$/.test(subject) || /https:\/\/localhost(?::|\/|$)/i.test(subject)) {
     throw new Error('VAPID_SUBJECT must be a valid public HTTPS contact URL or mailto: address.');

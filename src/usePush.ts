@@ -46,6 +46,7 @@ export function usePush(profile: Profile | null) {
     void (async () => {
       try {
         const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+        if (registration.active?.state !== 'activated') await navigator.serviceWorker.ready;
         const response = await fetch('/api/push/config', { cache: 'no-store' });
         if (!response.ok) throw new Error('Could not load notification settings.');
         const { publicKey } = await response.json() as { publicKey: string };

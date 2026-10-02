@@ -4,7 +4,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { createPushService, validSubscription } from './push.mjs';
+import { createPushService, describePushError, validSubscription } from './push.mjs';
 
 const port = Number(process.env.PORT || 3000);
 const dataPath = join(process.env.DATA_DIR || resolve('.data'), 'state.json');
@@ -40,6 +40,7 @@ const deviceById = id => store.devices.find(device => device.id === id);
 const publicDevice = device => ({ id: device.id, name: device.name, roomId: device.roomId });
 const sessions = new Map();
 const attempts = new Map();
+const lastPushTest = new Map();
 const online = new Map(); // device ID -> current websocket
 const calls = new Map();
 
@@ -85,10 +86,11 @@ async function notifyCall(call, ttl) {
   let changed = false;
   const delivered = await Promise.all(targets.map(async ({ id, subscription }) => {
     try {
-      await push.send(subscription, { type: 'call', callId: call.id, expiresAt: Date.now() + ttl * 1000 }, ttl);
+      const result = await push.send(subscription, { type: 'call', callId: call.id, expiresAt: Date.now() + ttl * 1000 }, ttl);
+      console.info(`Call push accepted for a device (${result?.statusCode || 'sent'}).`);
       return true;
     } catch (error) {
-      console.warn(`Push delivery failed for a device (${error?.statusCode || error?.code || 'network'}).`);
+      console.warn(`Push delivery failed for a device (${describePushError(error)}).`);
       const device = deviceById(id);
       if ([404, 410].includes(error?.statusCode) && device?.push?.endpoint === subscription.endpoint) {
         delete device.push;
@@ -190,8 +192,34 @@ app.delete('/api/rooms/:id', requireAdmin, (req, res) => {
 app.get('/api/devices', requireAdmin, (_req, res) => {
   res.json(store.devices.map(device => ({ ...publicDevice(device), online: online.has(device.id), alerts: !!validSubscription(device.push), updatedAt: device.updatedAt || null })));
 });
+app.post('/api/devices/:id/test-alert', requireAdmin, async (req, res) => {
+  const device = deviceById(req.params.id);
+  if (!device) return res.status(404).json({ error: 'Device not found.' });
+  const subscription = device.roomId && validSubscription(device.push);
+  if (!subscription) return res.status(409).json({ error: 'Enable lock-screen alerts on this device first.' });
+  const now = Date.now();
+  if (now - (lastPushTest.get(device.id) || 0) < 20_000) {
+    return res.status(429).json({ error: 'Wait 20 seconds before sending another test alert.' });
+  }
+  lastPushTest.set(device.id, now);
+  try {
+    const result = await push.send(subscription, { type: 'test' }, 60);
+    console.info(`Test push accepted for a device (${result?.statusCode || 'sent'}).`);
+    res.json({ status: 'accepted', providerStatus: result?.statusCode || null });
+  } catch (error) {
+    const detail = describePushError(error);
+    console.warn(`Test push failed for a device (${detail}).`);
+    if ([404, 410].includes(error?.statusCode) && device.push?.endpoint === subscription.endpoint) {
+      delete device.push;
+      if (!online.has(device.id)) endCallsForDevice(device.id, 'disconnected', true);
+      persist(); broadcastState();
+    }
+    res.status(502).json({ error: `Test alert failed (${detail}).`, providerStatus: error?.statusCode || null });
+  }
+});
 app.delete('/api/devices/:id', requireAdmin, (req, res) => {
   if (!deviceById(req.params.id)) return res.status(404).json({ error: 'Device not found.' });
+  lastPushTest.delete(req.params.id);
   endCallsForDevice(req.params.id, 'revoked', true);
   const socket = online.get(req.params.id);
   online.delete(req.params.id);

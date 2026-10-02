@@ -139,6 +139,8 @@ function ManagePanel({ app, onClose }: { app: Intercom; onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState('');
   const [deleting, setDeleting] = useState<Room | null>(null);
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ message: string; error: boolean } | null>(null);
   useEffect(() => {
     void app.listDevices().then(setDevices).catch(cause => setLocalError((cause as Error).message));
   }, [app.rooms]);
@@ -167,6 +169,20 @@ function ManagePanel({ app, onClose }: { app: Intercom; onClose: () => void }) {
     catch (cause) { setLocalError((cause as Error).message); setRevokingDevice(null); }
     finally { setBusy(false); }
   };
+  const sendTestAlert = async (device: AdminDevice) => {
+    setTestingId(device.id); setTestResult(null);
+    try {
+      const response = await fetch(`/api/devices/${encodeURIComponent(device.id)}/test-alert`, { method: 'POST', credentials: 'same-origin' });
+      const data = await response.json() as { error?: string; providerStatus?: number };
+      if (!response.ok) throw new Error(data.error || 'Could not send test alert.');
+      setTestResult({ error: false, message: `Push service accepted ${device.name}’s test (HTTP ${data.providerStatus || 'OK'}). Acceptance does not guarantee display; if the iPhone stays silent, check its Notifications settings and Home Screen installation.` });
+    } catch (cause) {
+      setTestResult({ error: true, message: `${device.name}: ${(cause as Error).message}` });
+    } finally {
+      setTestingId(null);
+      void app.listDevices().then(setDevices).catch(() => {});
+    }
+  };
   return <div className="panel-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <aside className="manage-panel" aria-label="Manage rooms">
       <div className="panel-top"><div className="eyebrow">YOUR SPACE / SETTINGS</div><button className="icon-button" autoFocus onClick={onClose} aria-label="Close settings"><X size={19}/></button></div>
@@ -187,9 +203,11 @@ function ManagePanel({ app, onClose }: { app: Intercom; onClose: () => void }) {
       {localError && !creating && !editing && <div className="form-error">{localError}</div>}
       <div className="panel-section-heading device-heading"><span>REGISTERED DEVICES <b>{devices.length.toString().padStart(2, '0')}</b></span></div>
       <div className="manage-list device-list">{devices.map(device => <div className="manage-row" key={device.id}>
-        <span className="device-list-icon"><Headphones size={18}/></span><div className="manage-row-copy"><strong>{device.name}</strong><span>{app.rooms.find(room => room.id === device.roomId)?.name || 'Unassigned'} · {device.online ? 'Online' : device.alerts ? 'Lock-screen alerts on' : 'Offline'}</span></div>
+        <span className="device-list-icon"><Headphones size={18}/></span><div className="manage-row-copy"><strong>{device.name}</strong><span>{app.rooms.find(room => room.id === device.roomId)?.name || 'Unassigned'} · {device.online ? 'Online' : 'Offline'}{device.alerts ? ' · alerts on' : ''}</span></div>
+        {device.alerts && <button className="icon-button test-alert-button" disabled={!!testingId} onClick={() => void sendTestAlert(device)} aria-label={`Send test alert to ${device.name}`} title="Send a test notification"><Bell size={17}/></button>}
         <button className="icon-button danger-hover" onClick={() => setRevokingDevice(device)} aria-label={`Remove ${device.name}`} title="Remove device"><Trash2 size={17}/></button>
       </div>)}{!devices.length && <div className="device-empty">No devices registered yet.</div>}</div>
+      {testResult && <div className={`device-test-result ${testResult.error ? 'device-test-error' : ''}`} role={testResult.error ? 'alert' : 'status'}>{testResult.message}</div>}
       <div className="panel-footer"><Shield size={18}/><span>Only someone with the administrator PIN can make changes to rooms or device assignments.</span></div>
       <button className="lock-admin" onClick={() => { void app.lock().then(onClose).catch(cause => setLocalError((cause as Error).message)); }}><LockKeyhole size={15}/> Lock administrator access</button>
     </aside>

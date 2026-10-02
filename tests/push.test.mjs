@@ -84,11 +84,23 @@ test('push-only rooms can be called and the first reopened device wins', async (
     const offlinePresence = (await api('/api/bootstrap')).data.presence.find(item => item.roomId === to.id);
     assert.equal(offlinePresence.online, 0);
     assert.equal(offlinePresence.alerts, 2);
+    assert.equal((await api(`/api/devices/${receiverA.device.id}/test-alert`, 'POST')).status, 401);
+    const testAlert = await api(`/api/devices/${receiverA.device.id}/test-alert`, 'POST', undefined, true);
+    assert.equal(testAlert.status, 200);
+    assert.equal(testAlert.data.providerStatus, 201);
+    assert.equal((await api(`/api/devices/${receiverA.device.id}/test-alert`, 'POST', undefined, true)).status, 429);
+    const testDelivery = JSON.parse(readFileSync(logPath, 'utf8').trim());
+    assert.equal(testDelivery.payload.type, 'test');
+    assert.equal(testDelivery.ttl, 60);
     const callerSocket = connect(caller); await callerSocket.ready();
     callerSocket.send({ type: 'call:start', targetRoomId: to.id, mode: 'audio' });
     const outgoing = await callerSocket.wait(item => item.type === 'call:outgoing');
-    for (let i = 0; i < 100 && !existsSync(logPath); i++) await sleep(20);
-    const deliveries = readFileSync(logPath, 'utf8').trim().split('\n').map(JSON.parse);
+    let deliveries = [];
+    for (let i = 0; i < 100; i++) {
+      deliveries = existsSync(logPath) ? readFileSync(logPath, 'utf8').trim().split('\n').map(JSON.parse).filter(item => item.payload.type === 'call') : [];
+      if (deliveries.length === 2) break;
+      await sleep(20);
+    }
     assert.equal(deliveries.length, 2);
     assert.deepEqual(deliveries.map(item => item.endpoint).sort(), [payloadA.subscription.endpoint, payloadB.subscription.endpoint].sort());
     assert.ok(deliveries.every(item => item.payload.callId === outgoing.callId && item.ttl === 75));
@@ -107,6 +119,7 @@ test('push-only rooms can be called and the first reopened device wins', async (
     assert.equal((await api('/api/bootstrap')).data.presence.find(item => item.roomId === to.id).alerts, 2);
     assert.equal((await api('/api/devices', 'GET', undefined, true)).data.find(item => item.id === receiverA.device.id).alerts, true);
     assert.equal((await api('/api/push/subscription', 'DELETE', { id: receiverA.device.id, token: receiverA.token })).status, 204);
+    assert.equal((await api(`/api/devices/${receiverA.device.id}/test-alert`, 'POST', undefined, true)).status, 409);
     callerSocket.send({ type: 'call:start', targetRoomId: to.id, mode: 'audio' });
     const resumedCall = await callerSocket.wait(item => item.type === 'call:outgoing' && item.callId !== outgoing.callId);
     const firstAttempt = connect(receiverB); await firstAttempt.ready();
