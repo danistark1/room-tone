@@ -21,8 +21,7 @@ services:
     environment:
       LAN_HOST: ${LAN_HOST:?Set LAN_HOST to your server LAN IP in .env}
     ports:
-      - "${LAN_HOST}:80:80"
-      - "${LAN_HOST}:443:443"
+      - "${LAN_HOST}:${HTTPS_PORT:-8443}:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

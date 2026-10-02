@@ -6,24 +6,24 @@ A private, browser-based intercom for your local network. Give each browser a ro
 
 ## What you need
 
-- A computer or NAS on your LAN with Docker Engine and the Docker Compose plugin, kept running during calls. Reserve a stable LAN IP for it in your router. The included configuration uses ports **80** and **443** on that host.
+- A computer or NAS on your LAN with Docker Engine and the Docker Compose plugin, kept running during calls. Reserve a stable LAN IP for it in your router. The included configuration publishes only HTTPS on host port **8443** by default (configurable with `HTTPS_PORT`); it does not claim host ports 80 or 443.
 - Browsers on client devices that support WebRTC and can reach one another over the LAN. A microphone is needed for voice; a camera is optional for video. Keep the app tab open while expecting calls, especially on mobile devices.
 - Permission to install a local root certificate on **each client device**. This is necessary because browsers will not offer camera/microphone access to an ordinary `http://192.168.x.x` page. The included Caddy container creates local HTTPS for your LAN IP. See [MDN's secure-context requirement](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia) and [Caddy's local HTTPS guide](https://caddyserver.com/docs/automatic-https#local-https).
 
 ## Deploy with Docker Compose
 
-1. Copy `.env.example` to `.env`. Set `LAN_HOST` to the Docker host's **stable LAN IP**, such as `192.168.1.50`. Set `ADMIN_PIN` to your own unique secret of at least six characters. Use a longer random passphrase when possible. Restrict the file to the host administrator (`chmod 600 .env` on Linux).
+1. Copy `.env.example` to `.env`. Set `LAN_HOST` to the Docker host's **stable LAN IP**, such as `192.168.1.50`. Set `ADMIN_PIN` to your own unique secret of at least six characters. Use a longer random passphrase when possible. `HTTPS_PORT=8443` is the default; if another project uses it, choose another unused host port such as `9443`. Restrict the file to the host administrator (`chmod 600 .env` on Linux).
 2. In this folder, run:
 
    ```bash
    docker compose up -d --build
    ```
 
-3. Check that it started. Replace the IP below with your `LAN_HOST`:
+3. Check that it started. Replace the IP below with your `LAN_HOST`, and change `8443` if you configured another `HTTPS_PORT`:
 
    ```bash
    docker compose ps
-   curl -k https://192.168.1.50/healthz
+   curl -k https://192.168.1.50:8443/healthz
    ```
 
    The `-k` flag is only for this first server-health check, before trusting the local certificate. A healthy response is `{"status":"ok"}`. **Do not treat a browser certificate-warning bypass as a substitute for installing the CA.**
@@ -34,8 +34,10 @@ A private, browser-based intercom for your local network. Give each browser a ro
    ```
 
    If the file does not exist yet, visit the HTTPS URL once with `curl -k`, then retry. Copy `roomtone-ca.crt` to each client over a trusted local channel and add it to that device's trusted root authorities. The Caddy root key remains in the private `caddy_data` Docker volume; never distribute it.
-5. On each browser device, open **`https://<LAN_HOST>/`**. The address must match `.env` exactly, and the browser should show a normal trusted HTTPS connection. Choose a device name and room, then enter the administrator PIN to assign it. Do the same on another device in another room; it should appear online immediately. You can edit the four starter rooms or add/delete rooms in **Manage rooms**.
+5. On each browser device, open **`https://<LAN_HOST>:8443/`** (substitute your configured `HTTPS_PORT` if different). Use the HTTPS scheme and port explicitly; no host port 80 redirect is published. The IP address must match `LAN_HOST`, and the browser should show a normal trusted HTTPS connection. Choose a device name and room, then enter the administrator PIN to assign it. Do the same on another device in another room; it should appear online immediately. You can edit the four starter rooms or add/delete rooms in **Manage rooms**.
 6. Tap or click the app once to allow audible ringing on that browser. If the dashboard offers **Enable ring sound**, use it. Allow the browser's microphone/camera permission when placing or answering a call.
+
+**Updating an existing checkout:** Run `git pull --ff-only`, optionally add `HTTPS_PORT=8443` (or another unused port) to your existing `.env`, then run `docker compose up -d --build`. The default is 8443 even if that line is absent. This recreates Roomtone's containers without stopping unrelated Docker projects and preserves its named data and Caddy CA volumes. If the chosen host port is occupied, change `HTTPS_PORT` and retry; you do not need to change the Caddyfile.
 
 ### Installing the local CA on clients
 
@@ -49,7 +51,7 @@ The exact menus differ by OS version. Use the device's **trusted root CA** store
 | Android | Install a CA certificate in Settings' security / encryption-and-credentials area. The path and browser trust behavior vary by Android version and browser. |
 | Linux | Add it to the system trust store using your distribution's CA procedure, and ensure your browser uses that store. |
 
-After importing, open `https://<LAN_HOST>/` again. If the browser still reports an untrusted or mismatched certificate, check that the IP in the address bar matches `LAN_HOST`, the CA file came from this exact Caddy instance, and the browser was restarted. On iOS, verify the additional **full trust** switch. If you later change the Docker host's IP, update `LAN_HOST`, restart the stack and revisit the new IP; Caddy can issue a new leaf certificate under the same persisted CA.
+After importing, open `https://<LAN_HOST>:8443/` again (or use your configured HTTPS port). If the browser still reports an untrusted or mismatched certificate, check that the IP in the address bar matches `LAN_HOST`, the CA file came from this exact Caddy instance, and the browser was restarted. On iOS, verify the additional **full trust** switch. Changing only `HTTPS_PORT` does not require a new CA; the certificate covers the IP address, not the port. If you later change the Docker host's IP, update `LAN_HOST`, restart the stack and revisit the new IP; Caddy can issue a new leaf certificate under the same persisted CA.
 
 ## Everyday use
 
@@ -57,7 +59,7 @@ After importing, open `https://<LAN_HOST>/` again. If the browser still reports 
 
 **Calling:** Select an online room and choose **Voice call** or **Video call**. All available devices in that room ring; the first answer connects and the others stop ringing. Declining on one device does not reject the call for the others. Rooms are treated as busy during ringing and while connected, so another call to/from either room waits until the current attempt ends. Calls time out after 45 seconds without an answer. Use the in-call controls to mute, toggle the camera where present, or hang up. A microphone-only device can answer a video call with voice while still receiving the other party's video.
 
-**Network scope:** The app server and Caddy run only on your machine's Docker host and have no cloud backend. Docker binds ports 80/443 **only to the configured `LAN_HOST` IPv4 interface**, rather than all host interfaces. Still, **do not forward these ports on your router** and use a host firewall to allow them only from trusted LAN subnets. Devices must be able to connect directly over your network for WebRTC media: guest Wi-Fi isolation, client isolation, VLAN rules, host firewalls, or restrictive VPN policies can block calls even when both browsers can reach the app. No STUN/TURN relay is configured, intentionally. WebRTC media is encrypted in transit; the server never records it.
+**Network scope:** The app server and Caddy run only on your machine's Docker host and have no cloud backend. Docker binds the configured host HTTPS port (8443 by default) **only to the `LAN_HOST` IPv4 interface**, rather than all host interfaces. It does not publish host ports 80 or 443. Still, **do not forward the chosen port on your router** and use a host firewall to allow it only from trusted LAN subnets. Devices must be able to connect directly over your network for WebRTC media: guest Wi-Fi isolation, client isolation, VLAN rules, host firewalls, or restrictive VPN policies can block calls even when both browsers can reach the app. No STUN/TURN relay is configured, intentionally. WebRTC media is encrypted in transit; the server never records it.
 
 ## Maintenance and backups
 
